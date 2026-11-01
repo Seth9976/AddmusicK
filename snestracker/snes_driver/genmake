@@ -1,0 +1,151 @@
+#!/bin/bash
+
+# with my incbin patch on WLA DX, it is no longer needed to touch binfiles
+# that haven't yet been created.
+#touch apu/spc.bin
+
+# Don't hardcode the wlaprefix here, because it's used from the parent
+# Makefile
+#wlaprefix=~/Code/git-repos/wla-dx/build/binaries/
+APU_CC=${wlaprefix}wla-spc700
+CPU_CC=${wlaprefix}wla-65816
+LD=${wlaprefix}wlalink
+
+objdir=obj
+apuobjs=""
+cpuobjs=""
+romtitle=""
+# Checks for Existence of RomTitle Argument 1
+if [ -z $1 ]
+  then
+    romtitle="Tracker.smc"
+  else
+	  romtitle="$1"
+fi
+
+echo "WLAPREFIX = ${wlaprefix}"
+echo "PCX2SNES_PREFIX = ${pcx2snes_prefix}"
+
+echo '# ROM TITLE'
+echo "ROMTITLE = $romtitle"
+echo "
+# Wla-65816 Compiler information (CPU SIDE)
+CPU_CC = \$(WLAPREFIX)wla-65816
+CPU_CFLAGS = -o
+LD = \$(WLAPREFIX)wlalink
+LDFLAGS = -S
+#--
+
+# Wla-spc700 Compiler information (APU SIDE)
+APU_CC = \$(WLAPREFIX)wla-spc700
+APU_CFLAGS = -o
+APU_LDFLAGS = -b -S
+
+"
+
+echo '' > /tmp/apu
+for file in apu/*.s; do
+	echo "$file" > /tmp/filename
+	objname="`sed 's/\.s/\.o/' /tmp/filename`"
+	apuobjs="$apuobjs $objname"
+  ${APU_CC} -M -o $objdir/$objname $file | grep -v DISCARD >> /tmp/apu
+	echo >> /tmp/apu
+done
+
+echo '' > /tmp/cpu
+for file in cpu/*.s; do
+	echo "$file" > /tmp/filename
+	objname="`sed 's/\.s/\.o/' /tmp/filename`"
+	cpuobjs="$cpuobjs $objname"
+  ${CPU_CC} -M -o $objdir/$objname $file | grep -v DISCARD >> /tmp/cpu
+	echo >> /tmp/cpu
+done
+
+echo "
+CPU_OFILES = $cpuobjs
+APU_OFILES = $apuobjs
+
+OBJDIR = $objdir
+
+"
+
+echo '
+# Object Information
+CPU_OBJDIR = $(OBJDIR)/cpu
+CPU_OBJS = $(addprefix $(OBJDIR)/,$(CPU_OFILES))
+APU_OBJDIR = $(OBJDIR)/apu
+APU_OBJS = $(addprefix $(OBJDIR)/,$(APU_OFILES))
+
+OBJS = $(CPU_OBJS)
+OBJS += $(APU_OBJS)
+# --
+'
+echo ''
+
+#cat MakefileGenerator/MainRecipes
+echo '
+all: CheckNewSnesSourceFiles spc.bin $(ROMTITLE)
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+# MAIN GOALS / RECIPES
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+$(ROMTITLE): $(CPU_OBJS) Makefile
+	@echo "" > linkfile.tmp
+	@echo "[objects]" >> linkfile.tmp
+	@echo "$(CPU_OBJS)" >> linkfile.tmp
+	@sed y/" "/"\n"/ linkfile.tmp > linkfile
+	@echo "" >> linkfile
+	@rm linkfile.tmp
+	$(LD) $(LDFLAGS) linkfile $(ROMTITLE)
+	@rm linkfile
+
+spc.bin: $(APU_OBJS) Makefile
+	@echo "" > linkfile_spc.tmp
+	@echo "[objects]" >> linkfile_spc.tmp
+	@echo "$(APU_OBJS)" >> linkfile_spc.tmp
+	@sed y/" "/"\n"/ linkfile_spc.tmp > linkfile_spc
+	@echo "" >> linkfile_spc
+	@rm linkfile_spc.tmp
+	$(LD) $(APU_LDFLAGS) linkfile_spc $(OBJDIR)/$@
+	@cp $(OBJDIR)/$@ .
+	@mv $(OBJDIR)/$(basename $@).sym .
+	@printf "spc.bin is 0x%x bytes\n" `ls -l $@ | awk "{print \\$$5}"`
+	@rm linkfile_spc
+
+$(OBJDIR)/cpu/%.o: cpu/%.s
+	@mkdir -p $(@D)
+	$(CPU_CC) $(CPU_CFLAGS) $@ $<
+
+$(OBJDIR)/apu/%.o: apu/%.s
+	@mkdir -p $(@D)
+	$(APU_CC) $(APU_CFLAGS) $@ $<
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+'
+
+echo '#------------------------------'
+echo '#APU SIDE'
+echo '#------------------------------'
+sed 's#\\\(.\)#/\1#g' /tmp/apu
+echo '#------------------------------'
+echo '#CPU SIDE'
+echo '#------------------------------'
+sed 's#\\\(.\)#/\1#g' /tmp/cpu
+echo '
+include Makefile.gfx
+
+.PHONY: clean
+clean:
+	rm -rf $(OBJDIR) $(OFILES) core *~ $(ROMTITLE) *.lib obj/*.o *.sym spc.bin
+	find gfx -name "*.pic" -o -name "*.clr" -o -name "*.map" | xargs rm -f
+'
+
+# last but not least, we should check for differences in source/include
+# file existence to see if we need to auto-regen the Makefile
+echo "CheckNewSnesSourceFiles: FORCE
+	@find . -name *.s -o -name *.i | sort | uniq | sed 's#./##' > 1
+	@grep -E '(cpu|apu)/([^%]*\.s|.*\.i)' Makefile | sed -e 's/ \\\\//' -e 's/.*\.o://' | tr -d '	 ' | sort | uniq > 2
+	@if ! diff 1 2 > /dev/null; then \
+		wlaprefix=\$(WLAPREFIX) pcx2snes_prefix=\$(PCX2SNES_PREFIX) ./genmake > Makefile ; fi
+	@rm 1 2
+
+FORCE: ;
+"

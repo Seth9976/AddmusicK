@@ -1,0 +1,5 @@
+*.cpp.d
+*.o
+*.dylib*
+*.so*
+*.dll*
